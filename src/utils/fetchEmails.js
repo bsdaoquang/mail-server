@@ -5,13 +5,12 @@ import { config } from '../config.js';
 import axios from 'axios';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
-import path from 'path';
 
 puppeteer.use(StealthPlugin());
 
-// Auto-detect Chrome/Chromium path on VPS (ENV/CONFIG -> snap -> system paths)
 const detectChromePath = () => {
 	const candidates = [
+		puppeteer.executablePath(), // Bundled Chromium
 		process.env.CHROME_PATH || (config && config.CHROME_PATH),
 		'/snap/bin/chromium',
 		'/usr/bin/chromium-browser',
@@ -29,33 +28,28 @@ const detectChromePath = () => {
 
 const API_KEY = config.API_KEY_2CAPTCHA;
 
-// Safe click with log
 const safeClick = async (page, selector, stepName = '') => {
-	console.log(`[DEBUG] Trying click: ${stepName} -> selector: ${selector}`);
+	console.log(`[DEBUG][${stepName}] Trying click: ${selector}`);
 	await page.waitForSelector(selector, { visible: true, timeout: 30000 });
-	await page.waitForFunction(
-		(sel) => {
-			const el = document.querySelector(sel);
-			if (!el) return false;
-			const style = window.getComputedStyle(el);
-			return (
-				style.display !== 'none' &&
-				style.visibility !== 'hidden' &&
-				!el.disabled
-			);
-		},
-		{},
-		selector
-	);
-	await page.evaluate((sel) => {
-		const el = document.querySelector(sel);
-		if (el) el.click();
-	}, selector);
-	console.log(`[DEBUG] Clicked: ${stepName}`);
+	await page.click(selector);
 };
 
-// Try multiple selectors
-const tryClickMultiple = async (page, selectors, stepName) => {
+const waitAnyVisible = async (page, selectors, stepName = '') => {
+	console.log(`[DEBUG][${stepName}] Waiting any selector:`, selectors);
+	const timeout = 30000;
+	const checks = selectors.map((sel) =>
+		page
+			.waitForSelector(sel, { visible: true, timeout })
+			.then(() => sel)
+			.catch(() => null)
+	);
+	const result = await Promise.race(checks);
+	if (!result) throw new Error(`[${stepName}] None visible`);
+	console.log(`[DEBUG][${stepName}] Matched: ${result}`);
+	return result;
+};
+
+const clickFirst = async (page, selectors, stepName = '') => {
 	for (const sel of selectors) {
 		const found = await page.$(sel);
 		if (found) {
@@ -63,62 +57,61 @@ const tryClickMultiple = async (page, selectors, stepName) => {
 			return true;
 		}
 	}
-	console.log(
-		`[ERROR] ${stepName}: No selector matched -> ${selectors.join(', ')}`
-	);
+	console.log(`[ERROR][${stepName}] No selector matched`);
 	return false;
 };
 
 const solveCaptcha = async (page) => {
-	console.log('[DEBUG] Checking for captcha...');
-
+	console.log('[DEBUG][Captcha] Checking for captcha...');
 	let sitekey = null;
 
-	// 1. Nghe request network để lấy sitekey
 	page.on('request', (req) => {
 		const url = req.url();
 		if (url.includes('/recaptcha/api2/anchor')) {
-			const match = url.match(/[?&]k=([0-9A-Za-z_-]+)/);
-			if (match) {
-				sitekey = match[1];
-				console.log(`[DEBUG] Captcha sitekey found from network: ${sitekey}`);
+			const match = url.match(/[?&]k=([^&]+)/);
+			if (match && match[1]) {
+				sitekey = decodeURIComponent(match[1]);
+				console.log('[DEBUG][Captcha] Captured sitekey:', sitekey);
 			}
 		}
 	});
 
-	// 2. Chờ iframe captcha xuất hiện
-	const captchaFrame = await page
-		.waitForSelector('iframe[src*="recaptcha"]', { timeout: 15000 })
-		.catch(() => null);
-	if (!captchaFrame) {
-		console.log('[DEBUG] No captcha iframe found.');
-		return null;
-	}
-
-	// 3. Nếu sitekey chưa có, thử lấy trong iframe
 	if (!sitekey) {
-		const frame = page.frames().find((f) => f.url().includes('recaptcha'));
-		if (frame) {
-			sitekey = await frame.evaluate(() => {
-				const el = document.querySelector('[data-sitekey]');
-				return el ? el.getAttribute('data-sitekey') : null;
-			});
-		}
+		try {
+			const frames = page.frames();
+			for (const f of frames) {
+				const sk = await f
+					.$eval('div.g-recaptcha[data-sitekey]', (el) =>
+						el.getAttribute('data-sitekey')
+					)
+					.catch(() => null);
+				if (sk) {
+					sitekey = sk;
+					break;
+				}
+			}
+		} catch {}
 	}
 
 	if (!sitekey) {
-		console.log('[ERROR] Could not find sitekey for captcha.');
-		return null;
+		console.log('[DEBUG][Captcha] No captcha detected.');
+		return;
 	}
 
-	// 4. Gửi tới 2Captcha
-	const id = await axios.get(
-		`http://2captcha.com/in.php?key=${API_KEY}&method=userrecaptcha&googlekey=${sitekey}&pageurl=${page.url()}&json=1`
+	console.log('[DEBUG][Captcha] Solving with 2Captcha...');
+	const pageUrl = page.url();
+	const inRes = await axios.get(
+		`http://2captcha.com/in.php?key=${API_KEY}&method=userrecaptcha&googlekey=${sitekey}&pageurl=${encodeURIComponent(
+			pageUrl
+		)}&json=1`
 	);
-	const requestId = id.data.request;
+	if (inRes.data.status !== 1) {
+		throw new Error('2Captcha IN error: ' + JSON.stringify(inRes.data));
+	}
+	const requestId = inRes.data.request;
 
-	let token = '';
-	while (true) {
+	let token = null;
+	for (let i = 0; i < 20; i++) {
 		await new Promise((r) => setTimeout(r, 5000));
 		const res = await axios.get(
 			`http://2captcha.com/res.php?key=${API_KEY}&action=get&id=${requestId}&json=1`
@@ -127,19 +120,30 @@ const solveCaptcha = async (page) => {
 			token = res.data.request;
 			break;
 		}
-		console.log('[DEBUG] Waiting for captcha solution...');
+		if (res.data.request !== 'CAPCHA_NOT_READY') {
+			throw new Error('2Captcha RES error: ' + JSON.stringify(res.data));
+		}
 	}
-	console.log('[DEBUG] Captcha solved.');
-	return token;
+	if (!token) throw new Error('2Captcha timeout');
+
+	await page.evaluate((tok) => {
+		const textarea = document.getElementById('g-recaptcha-response');
+		if (textarea) {
+			textarea.value = tok;
+		} else {
+			const t = document.createElement('textarea');
+			t.id = 'g-recaptcha-response';
+			t.value = tok;
+			document.body.appendChild(t);
+		}
+	}, token);
+
+	console.log('[DEBUG][Captcha] Solved & token injected');
 };
-// ... giữ nguyên các import và hàm safeClick, tryClickMultiple, solveCaptcha ...
 
 const loginAndGetMail = async ({ email, password }) => {
 	let browser;
-	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-	console.log('[DEBUG] Launching browser...');
-
-	console.log(`\n[START] Processing account: ${email}`);
+	console.log(`[START] Processing account: ${email}`);
 
 	try {
 		const execPath = detectChromePath();
@@ -158,251 +162,52 @@ const loginAndGetMail = async ({ email, password }) => {
 		const page = await browser.newPage();
 		page.setDefaultTimeout(60000);
 		page.setDefaultNavigationTimeout(90000);
-		await page.setUserAgent(
-			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36'
-		);
-		await page.setViewport({ width: 1366, height: 768 });
 
-		console.log('[DEBUG] Opening Google login page...');
+		// Step 0: Test network
+		console.log('[DEBUG][Step 0] Testing network with example.com...');
+		await page.goto('https://example.com', {
+			waitUntil: 'domcontentloaded',
+			timeout: 15000,
+		});
+		console.log('[DEBUG][Step 0] Network test OK');
+
+		console.log('[DEBUG][Step 1] Opening Google login...');
 		await page.goto('https://accounts.google.com/signin/v2/identifier', {
 			waitUntil: 'networkidle2',
 		});
 
-		console.log('[DEBUG] Typing email...');
-		const emailInput = await page.waitForSelector(
+		console.log('[DEBUG][Step 2] Typing email...');
+		await page.waitForSelector(
 			'input[type="email"], input[name="identifier"]',
-			{ visible: true, timeout: 30000 }
+			{ visible: true }
 		);
-		await emailInput.type(email, { delay: 50 });
+		await page.type('input[type="email"], input[name="identifier"]', email, {
+			delay: 50,
+		});
+		await safeClick(page, '#identifierNext', 'Click Next after Email');
+		await page.waitForTimeout(2000);
 
-		const emailNextSelectors = [
-			'#identifierNext',
-			'button[jsname="LgbsSe"]',
-			'div[role="button"][id*="Next"]',
-			'div[role="button"][jsname]',
-			'div[role="button"]:has(span)',
-		];
-		if (!(await tryClickMultiple(page, emailNextSelectors, 'Email Next'))) {
-			return {
-				email,
-				status: 'error',
-				message: 'Không tìm thấy nút Tiếp theo sau khi nhập email',
-				mails: [],
-			};
-		}
-		await page
-			.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
-			.catch(() => {});
+		console.log('[DEBUG][Step 3] Typing password...');
+		await page.waitForSelector('input[type="password"]', { visible: true });
+		await page.type('input[type="password"]', password, { delay: 50 });
+		await safeClick(page, '#passwordNext', 'Click Next after Password');
+		await page.waitForTimeout(3000);
 
-		// Captcha ở bước email
-		if (await page.$('iframe[src*="recaptcha"]')) {
-			const token = await solveCaptcha(page);
-			if (token) {
-				await page.evaluate(
-					`document.getElementById("g-recaptcha-response").innerHTML="${token}";`
-				);
-				await safeClick(page, '#recaptcha-demo-submit', 'Captcha Submit Email');
-				await wait(3000);
-			} else {
-				return {
-					email,
-					status: 'error',
-					message: 'Captcha ở bước email thất bại',
-					mails: [],
-				};
-			}
-		}
+		// Solve captcha if present
+		await solveCaptcha(page);
 
-		console.log('[DEBUG] Typing password...');
-		const passwordInput = await page.waitForSelector(
-			'input[name="Passwd"], input[type="password"]',
-			{ visible: true, timeout: 30000 }
-		);
-		await passwordInput.focus();
-		await passwordInput.type(password, { delay: 50 });
-
-		const passwordNextSelectors = [
-			'#passwordNext',
-			'button[jsname="LgbsSe"]',
-			'div[role="button"][id*="Next"]',
-			'div[role="button"][jsname]',
-			'div[role="button"]:has(span)',
-		];
-		if (
-			!(await tryClickMultiple(page, passwordNextSelectors, 'Password Next'))
-		) {
-			return {
-				email,
-				status: 'error',
-				message: 'Không tìm thấy nút Tiếp theo sau khi nhập mật khẩu',
-				mails: [],
-			};
-		}
-		await page
-			.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
-			.catch(() => {});
-
-		// Captcha ở bước password
-		if (await page.$('iframe[src*="recaptcha"]')) {
-			const token = await solveCaptcha(page);
-			if (token) {
-				await page.evaluate(
-					`document.getElementById("g-recaptcha-response").innerHTML="${token}";`
-				);
-				await safeClick(
-					page,
-					'#recaptcha-demo-submit',
-					'Captcha Submit Password'
-				);
-				await wait(3000);
-			} else {
-				console.log(
-					`[MANUAL] Captcha không có sitekey ở bước password cho ${email}`
-				);
-				const screenshotPath = `captcha_${Date.now()}.png`;
-				await page.screenshot({ path: screenshotPath });
-				console.log(`[MANUAL] Đã lưu screenshot tại: ${screenshotPath}`);
-				console.log(
-					`[MANUAL] Vui lòng giải captcha thủ công rồi nhấn Enter để tiếp tục.`
-				);
-				await new Promise((resolve) => {
-					process.stdin.resume();
-					process.stdin.once('data', () => {
-						process.stdin.pause();
-						resolve();
-					});
-				});
-			}
-		}
-
-		// OTP / 2FA
-		if (await page.$('input[type="tel"]')) {
-			console.log('[DEBUG] OTP required.');
-			if (!otpSecret) {
-				return {
-					email,
-					status: 'error',
-					message: 'Yêu cầu OTP nhưng không có otpSecret',
-					mails: [],
-				};
-			}
-			const otp = speakeasy.totp({ secret: otpSecret, encoding: 'base32' });
-			await page.type('input[type="tel"]', otp, { delay: 50 });
-
-			const otpNextSelectors = [
-				'#idvPreregisteredPhoneNext',
-				'#idvAnyPhoneNext',
-				'#totpNext',
-				'div[role="button"]:has(span)',
-			];
-			if (!(await tryClickMultiple(page, otpNextSelectors, 'OTP Next'))) {
-				return {
-					email,
-					status: 'error',
-					message: 'Không tìm thấy nút Tiếp theo sau khi nhập OTP',
-					mails: [],
-				};
-			}
-			await page
-				.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
-				.catch(() => {});
-		}
-
-		// Bỏ qua bước thêm số điện thoại / email khôi phục
-		await wait(5000);
-		let shouldSkipRecovery = false;
-		try {
-			if (
-				page.url().includes('addrecoveryphone') ||
-				page.url().includes('addrecoveryemail')
-			) {
-				shouldSkipRecovery = true;
-			} else {
-				const phoneHeaders = await page.$x(
-					"//h1[contains(text(),'Thêm số điện thoại')]"
-				);
-				const emailHeaders = await page.$x(
-					"//h1[contains(text(),'Thêm địa chỉ email khôi phục')]"
-				);
-				if (
-					(phoneHeaders && phoneHeaders.length > 0) ||
-					(emailHeaders && emailHeaders.length > 0)
-				) {
-					shouldSkipRecovery = true;
-				}
-			}
-		} catch (e) {
-			console.log('[ERROR] Error checking recovery step:', e.message);
-		}
-		if (shouldSkipRecovery) {
-			console.log('[DEBUG] Skipping recovery info step...');
-			const skipSelectors = [
-				'#skip',
-				'#cancel',
-				'button[jsname="LgbsSe"]',
-				'div[role="button"]:has(span)',
-			];
-			await tryClickMultiple(page, skipSelectors, 'Skip Recovery Info');
-			await page
-				.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
-				.catch(() => {});
-		}
-
-		if (page.url().includes('challenge')) {
-			console.log('[DEBUG] Login blocked by Google challenge.');
-			return {
-				email,
-				status: 'error',
-				message: 'Google yêu cầu xác minh bổ sung',
-				mails: [],
-			};
-		}
-
-		console.log('[DEBUG] Opening Gmail...');
+		console.log('[DEBUG][Step 4] Opening Gmail inbox...');
 		await page.goto('https://mail.google.com/mail/u/0/#inbox', {
 			waitUntil: 'networkidle2',
 		});
 
-		// Lấy 10 email mới nhất
-		const emails = await page.evaluate(() => {
-			const rows = Array.from(document.querySelectorAll('tr.zA')).slice(0, 10);
-			return rows.map((row) => {
-				const from =
-					row.querySelector('.yX.xY .yW span')?.getAttribute('email') ||
-					row.querySelector('.yX.xY .yW span')?.innerText;
-				const subject = row.querySelector('.y6 span span')?.innerText;
-				const snippet = row
-					.querySelector('.y2')
-					?.innerText.replace(/^-\s*/, ''); // tóm tắt nội dung
-				return { from, subject, snippet };
-			});
-		});
-
-		await wait(5000);
-
-		if (!emails.length) {
-			console.log('[DEBUG] No emails fetched.');
-			return {
-				email,
-				status: 'error',
-				message: 'Đăng nhập thành công, không phát hiện nội dung email',
-				mails: [],
-			};
-		}
-
-		console.log('[DEBUG] Emails fetched successfully.');
-		return {
-			email,
-			status: 'success',
-			message: 'Lấy email thành công',
-			mails: emails,
-		};
+		console.log(`[SUCCESS] Logged in and inbox loaded for ${email}`);
 	} catch (error) {
 		console.log(`[ERROR] ${email} -> ${error.message}`);
 		return {
 			email,
 			status: 'error',
-			message: error.message || 'Lỗi không xác định',
+			message: error.message || 'Unknown error',
 			mails: [],
 		};
 	} finally {

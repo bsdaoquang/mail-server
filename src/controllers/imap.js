@@ -2,44 +2,19 @@
 
 import { fetchEmails } from '../utils/fetchEmails.js';
 
-/** @format */
 const getMails = async (req, res) => {
-	const { email, appPassword } = req.body;
-
-	if (!email || !appPassword) {
-		res
-			.status(400)
-			.json({ message: 'Thiếu thông tin email hoặc mật khẩu ứng dụng' });
-	}
+	const { emails } = req.body;
 
 	try {
-		const mails = await fetchEmails(req.body);
+		const results = await fetchEmails(emails);
+
 		res.status(200).json({
-			message: 'Thành công',
-			data: mails,
+			message: 'Kết quả',
+			data: results,
 		});
-	} catch (err) {
-		console.error('Lỗi khi lấy email:', err.message);
-
-		let statusCode = 500;
-		let errorMsg = 'Lỗi không xác định';
-
-		if (err.code === 'EAUTH') {
-			statusCode = 401;
-			errorMsg = 'Xác thực thất bại: email hoặc app password sai';
-		} else if (err.code === 'ENOTFOUND') {
-			statusCode = 502;
-			errorMsg = 'Không kết nối được đến server Gmail';
-		} else if (err.code === 'ECONNECTION') {
-			statusCode = 504;
-			errorMsg = 'Kết nối Gmail bị timeout';
-		} else {
-			errorMsg = err.response || errorMsg;
-		}
-
-		res.status(statusCode).json({
-			message: errorMsg,
-			error: err,
+	} catch (error) {
+		res.status(500).json({
+			message: error.message,
 		});
 	}
 };

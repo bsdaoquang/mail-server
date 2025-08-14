@@ -123,7 +123,8 @@ const loginAndGetMail = async ({ email, password }) => {
 	try {
 		browser = await puppeteer.launch({
 			headless: true,
-			executablePath: config.CHROME_PATH,
+			// executablePath: config.CHROME_PATH,
+			executablePath: '/usr/bin/chromium-browser',
 			args: ['--no-sandbox', '--disable-setuid-sandbox'],
 		});
 

@@ -13,7 +13,6 @@ const API_KEY = config.API_KEY_2CAPTCHA;
 
 function getChromePath() {
 	try {
-		if (config.CHROME_PATH) return config.CHROME_PATH;
 		const paths = [
 			'/usr/bin/google-chrome',
 			'/usr/bin/chromium-browser',

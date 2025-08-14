@@ -124,7 +124,7 @@ const loginAndGetMail = async ({ email, password }) => {
 		browser = await puppeteer.launch({
 			headless: true,
 			executablePath: config.CHROME_PATH,
-			args: config.PROXY ? [`--proxy-server=${config.PROXY}`] : [],
+			args: ['--no-sandbox', '--disable-setuid-sandbox'],
 		});
 
 		const page = await browser.newPage();

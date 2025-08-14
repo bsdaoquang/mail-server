@@ -40,8 +40,8 @@ app.get('/health', (_req, res) =>
 
 app.listen(config.port, (err) => {
 	if (err) {
-		console.log('Server err');
-		return;
+		console.log('Server err', JSON.stringify(err));
+		process.exit();
 	}
 
 	console.log(`Server starting at http://localhost:${config.port}`);

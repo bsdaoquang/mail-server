@@ -146,7 +146,7 @@ const loginAndGetMail = async ({ email, password }) => {
 	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 	console.log(`\n[START] Processing account: ${email}`);
-	const chromePath = getChromePath();
+	const chromePath = '/usr/bin/chromium-browser';
 	if (!chromePath) {
 		throw new Error('Không tìm thấy Chrome/Chromium trên VPS.');
 	}

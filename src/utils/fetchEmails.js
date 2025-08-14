@@ -8,6 +8,8 @@ import fs from 'fs';
 
 puppeteer.use(StealthPlugin());
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const detectChromePath = () => {
 	const candidates = [
 		puppeteer.executablePath(), // Bundled Chromium
@@ -185,13 +187,13 @@ const loginAndGetMail = async ({ email, password }) => {
 			delay: 50,
 		});
 		await safeClick(page, '#identifierNext', 'Click Next after Email');
-		await page.waitForTimeout(2000);
+		await wait(2000);
 
 		console.log('[DEBUG][Step 3] Typing password...');
 		await page.waitForSelector('input[type="password"]', { visible: true });
 		await page.type('input[type="password"]', password, { delay: 50 });
 		await safeClick(page, '#passwordNext', 'Click Next after Password');
-		await page.waitForTimeout(3000);
+		await wait(3000);
 
 		// Solve captcha if present
 		await solveCaptcha(page);

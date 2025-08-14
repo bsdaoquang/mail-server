@@ -200,43 +200,43 @@ const loginAndGetMail = async ({ email, password }) => {
 
 		await wait(5000);
 		// bỏ qua bước nhập email khôi phục
-		let shouldSkipRecovery = false;
-		try {
-			if (
-				page.url().includes('addrecoveryphone') ||
-				page.url().includes('addrecoveryemail')
-			) {
-				shouldSkipRecovery = true;
-			} else {
-				const phoneHeaders = await page.$x(
-					"//h1[contains(text(),'Thêm số điện thoại')]"
-				);
-				const emailHeaders = await page.$x(
-					"//h1[contains(text(),'Thêm địa chỉ email khôi phục')]"
-				);
-				if (
-					(phoneHeaders && phoneHeaders.length > 0) ||
-					(emailHeaders && emailHeaders.length > 0)
-				) {
-					shouldSkipRecovery = true;
-				}
-			}
-		} catch (e) {
-			console.log('[ERROR] Error checking recovery step:', e.message);
-		}
-		if (shouldSkipRecovery) {
-			console.log('[DEBUG] Skipping recovery info step...');
-			const skipSelectors = [
-				'#skip',
-				'#cancel',
-				'button[jsname="LgbsSe"]',
-				'div[role="button"]:has(span)',
-			];
-			await tryClickMultiple(page, skipSelectors, 'Skip Recovery Info');
-			await page
-				.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
-				.catch(() => {});
-		}
+		// let shouldSkipRecovery = false;
+		// try {
+		// 	if (
+		// 		page.url().includes('addrecoveryphone') ||
+		// 		page.url().includes('addrecoveryemail')
+		// 	) {
+		// 		shouldSkipRecovery = true;
+		// 	} else {
+		// 		const phoneHeaders = await page.$x(
+		// 			"//h1[contains(text(),'Thêm số điện thoại')]"
+		// 		);
+		// 		const emailHeaders = await page.$x(
+		// 			"//h1[contains(text(),'Thêm địa chỉ email khôi phục')]"
+		// 		);
+		// 		if (
+		// 			(phoneHeaders && phoneHeaders.length > 0) ||
+		// 			(emailHeaders && emailHeaders.length > 0)
+		// 		) {
+		// 			shouldSkipRecovery = true;
+		// 		}
+		// 	}
+		// } catch (e) {
+		// 	console.log('[ERROR] Error checking recovery step:', e.message);
+		// }
+		// if (shouldSkipRecovery) {
+		// 	console.log('[DEBUG] Skipping recovery info step...');
+		// 	const skipSelectors = [
+		// 		'#skip',
+		// 		'#cancel',
+		// 		'button[jsname="LgbsSe"]',
+		// 		'div[role="button"]:has(span)',
+		// 	];
+		// 	await tryClickMultiple(page, skipSelectors, 'Skip Recovery Info');
+		// 	await page
+		// 		.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+		// 		.catch(() => {});
+		// }
 
 		if (page.url().includes('challenge')) {
 			console.log('[DEBUG] Login blocked by Google challenge.');

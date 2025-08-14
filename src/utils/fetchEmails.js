@@ -1,40 +1,33 @@
 /** @format */
-
-/** @format */
 import puppeteer from 'puppeteer-extra';
 import speakeasy from 'speakeasy';
 import { config } from '../config.js';
 import axios from 'axios';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import fs from 'fs';
+import path from 'path';
 
 puppeteer.use(StealthPlugin());
 
-const API_KEY = config.API_KEY_2CAPTCHA;
-
-function getChromePath() {
-	try {
-		const paths = [
-			'/usr/bin/google-chrome',
-			'/usr/bin/chromium-browser',
-			'/usr/bin/chromium',
-		];
-		for (const p of paths) {
-			try {
-				execSync(`test -f ${p}`);
-				return p;
-			} catch {}
-		}
-		// Tìm bằng which
-		const detected = execSync(
-			'which chromium-browser || which google-chrome || which chromium',
-			{ encoding: 'utf8' }
-		).trim();
-		if (detected) return detected;
-	} catch (e) {
-		console.error('[ERROR] Không tìm thấy Chrome/Chromium trên VPS.');
+// Auto-detect Chrome/Chromium path on VPS (ENV/CONFIG -> snap -> system paths)
+const detectChromePath = () => {
+	const candidates = [
+		process.env.CHROME_PATH || (config && config.CHROME_PATH),
+		'/snap/bin/chromium',
+		'/usr/bin/chromium-browser',
+		'/usr/bin/chromium',
+		'/usr/bin/google-chrome',
+		'/usr/bin/google-chrome-stable',
+	].filter(Boolean);
+	for (const p of candidates) {
+		try {
+			if (fs.existsSync(p)) return p;
+		} catch {}
 	}
 	return null;
-}
+};
+
+const API_KEY = config.API_KEY_2CAPTCHA;
 
 // Safe click with log
 const safeClick = async (page, selector, stepName = '') => {
@@ -144,30 +137,27 @@ const solveCaptcha = async (page) => {
 const loginAndGetMail = async ({ email, password }) => {
 	let browser;
 	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	console.log('[DEBUG] Launching browser...');
 
 	console.log(`\n[START] Processing account: ${email}`);
-	const chromePath = '/usr/bin/chromium-browser';
-	if (!chromePath) {
-		throw new Error('Không tìm thấy Chrome/Chromium trên VPS.');
-	}
+
 	try {
-		browser = await puppeteer
-			.launch({
-				headless: true,
-				executablePath: chromePath,
-				args: [
-					'--no-sandbox',
-					'--disable-setuid-sandbox',
-					'--disable-dev-shm-usage',
-					'--disable-gpu',
-				],
-			})
-			.catch((e) => {
-				console.log('Can not open Chrome path ' + chromePath);
-				throw new Error(`Không thể mở trình duyệt`);
-			});
+		const execPath = detectChromePath();
+		console.log('[DEBUG] Using Chromium path:', execPath || '(bundled)');
+		browser = await puppeteer.launch({
+			headless: true,
+			executablePath: execPath || undefined,
+			args: [
+				'--no-sandbox',
+				'--disable-setuid-sandbox',
+				'--disable-dev-shm-usage',
+				'--disable-gpu',
+			],
+		});
 
 		const page = await browser.newPage();
+		page.setDefaultTimeout(60000);
+		page.setDefaultNavigationTimeout(90000);
 		await page.setUserAgent(
 			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36'
 		);

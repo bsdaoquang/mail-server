@@ -1,5 +1,4 @@
 /** @format */
-import TwoCaptcha from '2captcha';
 import puppeteer from 'puppeteer-extra';
 import speakeasy from 'speakeasy';
 import { config } from '../config.js';
@@ -113,8 +112,9 @@ const solveCaptcha = async (page) => {
 	console.log('[DEBUG] Captcha solved.');
 	return token;
 };
+// ... giữ nguyên các import và hàm safeClick, tryClickMultiple, solveCaptcha ...
 
-const loginAndGetMail = async ({ email, password, otpSecret }) => {
+const loginAndGetMail = async ({ email, password }) => {
 	let browser;
 	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -122,7 +122,7 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 
 	try {
 		browser = await puppeteer.launch({
-			headless: false,
+			headless: true,
 			executablePath: config.CHROME_PATH,
 			args: config.PROXY ? [`--proxy-server=${config.PROXY}`] : [],
 		});
@@ -141,7 +141,7 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 		console.log('[DEBUG] Typing email...');
 		const emailInput = await page.waitForSelector(
 			'input[type="email"], input[name="identifier"]',
-			{ timeout: 30000 }
+			{ visible: true, timeout: 30000 }
 		);
 		await emailInput.type(email, { delay: 50 });
 
@@ -184,19 +184,11 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 		}
 
 		console.log('[DEBUG] Typing password...');
-		const passwordInput = await page
-			.waitForSelector('input[name="Passwd"], input[type="password"]', {
-				timeout: 30000,
-			})
-			.catch(() => null);
-		if (!passwordInput) {
-			return {
-				email,
-				status: 'error',
-				message: 'Không tìm thấy ô nhập password.',
-				mails: [],
-			};
-		}
+		const passwordInput = await page.waitForSelector(
+			'input[name="Passwd"], input[type="password"]',
+			{ visible: true, timeout: 30000 }
+		);
+		await passwordInput.focus();
 		await passwordInput.type(password, { delay: 50 });
 
 		const passwordNextSelectors = [
@@ -241,10 +233,8 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 				await page.screenshot({ path: screenshotPath });
 				console.log(`[MANUAL] Đã lưu screenshot tại: ${screenshotPath}`);
 				console.log(
-					`[MANUAL] Vui lòng giải captcha thủ công trên cửa sổ Puppeteer, sau đó quay lại terminal và nhấn Enter để tiếp tục.`
+					`[MANUAL] Vui lòng giải captcha thủ công rồi nhấn Enter để tiếp tục.`
 				);
-
-				// Tạm dừng cho đến khi người dùng nhấn Enter
 				await new Promise((resolve) => {
 					process.stdin.resume();
 					process.stdin.once('data', () => {
@@ -288,6 +278,46 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 				.catch(() => {});
 		}
 
+		// Bỏ qua bước thêm số điện thoại / email khôi phục
+		await wait(5000);
+		let shouldSkipRecovery = false;
+		try {
+			if (
+				page.url().includes('addrecoveryphone') ||
+				page.url().includes('addrecoveryemail')
+			) {
+				shouldSkipRecovery = true;
+			} else {
+				const phoneHeaders = await page.$x(
+					"//h1[contains(text(),'Thêm số điện thoại')]"
+				);
+				const emailHeaders = await page.$x(
+					"//h1[contains(text(),'Thêm địa chỉ email khôi phục')]"
+				);
+				if (
+					(phoneHeaders && phoneHeaders.length > 0) ||
+					(emailHeaders && emailHeaders.length > 0)
+				) {
+					shouldSkipRecovery = true;
+				}
+			}
+		} catch (e) {
+			console.log('[ERROR] Error checking recovery step:', e.message);
+		}
+		if (shouldSkipRecovery) {
+			console.log('[DEBUG] Skipping recovery info step...');
+			const skipSelectors = [
+				'#skip',
+				'#cancel',
+				'button[jsname="LgbsSe"]',
+				'div[role="button"]:has(span)',
+			];
+			await tryClickMultiple(page, skipSelectors, 'Skip Recovery Info');
+			await page
+				.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+				.catch(() => {});
+		}
+
 		if (page.url().includes('challenge')) {
 			console.log('[DEBUG] Login blocked by Google challenge.');
 			return {
@@ -299,20 +329,23 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 		}
 
 		console.log('[DEBUG] Opening Gmail...');
-		await page.goto(
-			'https://mail.google.com/mail/u/0/?ui=2&view=tl&start=0&num=10&rt=c',
-			{ waitUntil: 'networkidle2' }
-		);
+		await page.goto('https://mail.google.com/mail/u/0/#inbox', {
+			waitUntil: 'networkidle2',
+		});
 
-		const emails = [];
-		page.on('response', async (response) => {
-			const url = response.url();
-			if (url.includes('sync')) {
-				try {
-					const json = await response.json();
-					emails.push(json);
-				} catch {}
-			}
+		// Lấy 10 email mới nhất
+		const emails = await page.evaluate(() => {
+			const rows = Array.from(document.querySelectorAll('tr.zA')).slice(0, 10);
+			return rows.map((row) => {
+				const from =
+					row.querySelector('.yX.xY .yW span')?.getAttribute('email') ||
+					row.querySelector('.yX.xY .yW span')?.innerText;
+				const subject = row.querySelector('.y6 span span')?.innerText;
+				const snippet = row
+					.querySelector('.y2')
+					?.innerText.replace(/^-\s*/, ''); // tóm tắt nội dung
+				return { from, subject, snippet };
+			});
 		});
 
 		await wait(5000);
@@ -322,7 +355,7 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 			return {
 				email,
 				status: 'error',
-				message: 'Không lấy được email, Gmail chưa load hoặc bị chặn',
+				message: 'Đăng nhập thành công, không phát hiện nội dung email',
 				mails: [],
 			};
 		}
@@ -347,9 +380,4 @@ const loginAndGetMail = async ({ email, password, otpSecret }) => {
 	}
 };
 
-const fetchEmails = async (emails) => {
-	if (!emails.length) throw new Error('Không có địa chỉ emails');
-	return Promise.all(emails.map(loginAndGetMail));
-};
-
-export { fetchEmails };
+export { loginAndGetMail };

@@ -151,11 +151,21 @@ const loginAndGetMail = async ({ email, password }) => {
 		throw new Error('Không tìm thấy Chrome/Chromium trên VPS.');
 	}
 	try {
-		browser = await puppeteer.launch({
-			headless: true,
-			executablePath: chromePath,
-			args: ['--no-sandbox', '--disable-setuid-sandbox'],
-		});
+		browser = await puppeteer
+			.launch({
+				headless: true,
+				executablePath: chromePath,
+				args: [
+					'--no-sandbox',
+					'--disable-setuid-sandbox',
+					'--disable-dev-shm-usage',
+					'--disable-gpu',
+				],
+			})
+			.catch((e) => {
+				console.log('Can not open Chrome path ' + chromePath);
+				throw new Error(`Không thể mở trình duyệt`);
+			});
 
 		const page = await browser.newPage();
 		await page.setUserAgent(

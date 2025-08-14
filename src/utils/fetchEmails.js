@@ -198,12 +198,83 @@ const loginAndGetMail = async ({ email, password }) => {
 		// Solve captcha if present
 		await solveCaptcha(page);
 
+		await wait(5000);
+		// bỏ qua bước nhập email khôi phục
+		let shouldSkipRecovery = false;
+		try {
+			if (
+				page.url().includes('addrecoveryphone') ||
+				page.url().includes('addrecoveryemail')
+			) {
+				shouldSkipRecovery = true;
+			} else {
+				const phoneHeaders = await page.$x(
+					"//h1[contains(text(),'Thêm số điện thoại')]"
+				);
+				const emailHeaders = await page.$x(
+					"//h1[contains(text(),'Thêm địa chỉ email khôi phục')]"
+				);
+				if (
+					(phoneHeaders && phoneHeaders.length > 0) ||
+					(emailHeaders && emailHeaders.length > 0)
+				) {
+					shouldSkipRecovery = true;
+				}
+			}
+		} catch (e) {
+			console.log('[ERROR] Error checking recovery step:', e.message);
+		}
+		if (shouldSkipRecovery) {
+			console.log('[DEBUG] Skipping recovery info step...');
+			const skipSelectors = [
+				'#skip',
+				'#cancel',
+				'button[jsname="LgbsSe"]',
+				'div[role="button"]:has(span)',
+			];
+			await tryClickMultiple(page, skipSelectors, 'Skip Recovery Info');
+			await page
+				.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+				.catch(() => {});
+		}
+
+		if (page.url().includes('challenge')) {
+			console.log('[DEBUG] Login blocked by Google challenge.');
+			return {
+				email,
+				status: 'error',
+				message: 'Google yêu cầu xác minh bổ sung',
+				mails: [],
+			};
+		}
+
 		console.log('[DEBUG][Step 4] Opening Gmail inbox...');
 		await page.goto('https://mail.google.com/mail/u/0/#inbox', {
 			waitUntil: 'networkidle2',
 		});
 
 		console.log(`[SUCCESS] Logged in and inbox loaded for ${email}`);
+		// Lấy 10 email mới nhất
+		const emails = await page.evaluate(() => {
+			const rows = Array.from(document.querySelectorAll('tr.zA')).slice(0, 10);
+			return rows.map((row) => {
+				const from =
+					row.querySelector('.yX.xY .yW span')?.getAttribute('email') ||
+					row.querySelector('.yX.xY .yW span')?.innerText;
+				const subject = row.querySelector('.y6 span span')?.innerText;
+				const snippet = row
+					.querySelector('.y2')
+					?.innerText.replace(/^-\s*/, ''); // tóm tắt nội dung
+				return { from, subject, snippet };
+			});
+		});
+
+		return {
+			email,
+			status: 'success',
+			message: 'Lấy email thành công',
+			mails: emails,
+		};
 	} catch (error) {
 		console.log(`[ERROR] ${email} -> ${error.message}`);
 		return {

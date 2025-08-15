@@ -154,7 +154,7 @@ const loginAndGetMail = async ({ email, password }) => {
 		const execPath = detectChromePath();
 		console.log('[DEBUG] Using Chromium path:', execPath || '(bundled)');
 		browser = await puppeteer.launch({
-			headless: false,
+			headless: true,
 			executablePath: execPath || undefined,
 			args: [
 				'--no-sandbox',

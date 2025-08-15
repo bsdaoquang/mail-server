@@ -86,13 +86,17 @@ const solveCaptcha = async (page) => {
 					.$eval('div.g-recaptcha[data-sitekey]', (el) =>
 						el.getAttribute('data-sitekey')
 					)
-					.catch(() => null);
+					.catch(() => {
+						throw new Error('Không thể giải captcha');
+					});
 				if (sk) {
 					sitekey = sk;
 					break;
 				}
 			}
-		} catch {}
+		} catch {
+			throw new Error('Không thể giải captcha');
+		}
 	}
 
 	if (!sitekey) {
@@ -151,7 +155,7 @@ const loginAndGetMail = async ({ email, password }) => {
 		const execPath = detectChromePath();
 		console.log('[DEBUG] Using Chromium path:', execPath || '(bundled)');
 		browser = await puppeteer.launch({
-			headless: true,
+			headless: false,
 			executablePath: execPath || undefined,
 			args: [
 				'--no-sandbox',
@@ -188,6 +192,8 @@ const loginAndGetMail = async ({ email, password }) => {
 		});
 		await safeClick(page, '#identifierNext', 'Click Next after Email');
 		await wait(2000);
+
+		await solveCaptcha(page);
 
 		console.log('[DEBUG][Step 3] Typing password...');
 		await page.waitForSelector('input[type="password"]', { visible: true });
@@ -243,7 +249,8 @@ const loginAndGetMail = async ({ email, password }) => {
 			return {
 				email,
 				status: 'error',
-				message: 'Google yêu cầu xác minh bổ sung',
+				message:
+					'Không thể đăng nhập vì Google yêu cầu xác minh với OTP hoặc tài khoản bị khoá',
 				mails: [],
 			};
 		}

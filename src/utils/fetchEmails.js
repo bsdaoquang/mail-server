@@ -1,10 +1,9 @@
 /** @format */
-import puppeteer from 'puppeteer-extra';
-import speakeasy from 'speakeasy';
-import { config } from '../config.js';
 import axios from 'axios';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { config } from '../config.js';
 
 puppeteer.use(StealthPlugin());
 
@@ -151,7 +150,7 @@ const loginAndGetMail = async ({ email, password }) => {
 		const execPath = detectChromePath();
 		console.log('[DEBUG] Using Chromium path:', execPath || '(bundled)');
 		browser = await puppeteer.launch({
-			headless: true,
+			headless: false,
 			executablePath: execPath || undefined,
 			args: [
 				'--no-sandbox',
@@ -179,20 +178,62 @@ const loginAndGetMail = async ({ email, password }) => {
 		});
 
 		console.log('[DEBUG][Step 2] Typing email...');
-		await page.waitForSelector(
-			'input[type="email"], input[name="identifier"]',
-			{ visible: true }
+		const emailSelectors = [
+			'input[type="email"]',
+			'input[name="identifier"]',
+			'input[name="Email"]',
+			'input#identifierId',
+		];
+		const emailInputSel = await waitAnyVisible(
+			page,
+			emailSelectors,
+			'Email Input'
 		);
-		await page.type('input[type="email"], input[name="identifier"]', email, {
-			delay: 50,
-		});
-		await safeClick(page, '#identifierNext', 'Click Next after Email');
+		await page.type(emailInputSel, email, { delay: 50 });
+
+		const nextBtnSelectors = [
+			'#identifierNext',
+			'button[jsname="LgbsSe"]',
+			'div[role="button"][id^="identifierNext"]',
+			'div[role="button"]:has(span)',
+		];
+		await clickFirst(page, nextBtnSelectors, 'Click Next after Email');
 		await wait(2000);
 
 		console.log('[DEBUG][Step 3] Typing password...');
-		await page.waitForSelector('input[type="password"]', { visible: true });
-		await page.type('input[type="password"]', password, { delay: 50 });
-		await safeClick(page, '#passwordNext', 'Click Next after Password');
+		const passwordSelectors = [
+			'input[type="password"]',
+			'input[name="Passwd"]',
+			'input[name="password"]',
+		];
+		let passwordInputSel;
+		for (let attempt = 0; attempt < 5; attempt++) {
+			try {
+				passwordInputSel = await waitAnyVisible(
+					page,
+					passwordSelectors,
+					'Password Input'
+				);
+				break;
+			} catch (e) {
+				console.log(
+					`[DEBUG][Password Input] Attempt ${attempt + 1} failed, retrying...`
+				);
+				await wait(2000);
+			}
+		}
+		if (!passwordInputSel) {
+			throw new Error('[Password Input] None visible after retries');
+		}
+		await page.type(passwordInputSel, password, { delay: 50 });
+
+		const passNextBtnSelectors = [
+			'#passwordNext',
+			'button[jsname="LgbsSe"]',
+			'div[role="button"][id^="passwordNext"]',
+			'div[role="button"]:has(span)',
+		];
+		await clickFirst(page, passNextBtnSelectors, 'Click Next after Password');
 		await wait(3000);
 
 		// Solve captcha if present
